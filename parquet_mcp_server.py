@@ -3,7 +3,7 @@
 MCP Server for Parquet File Interactions
 
 Provides tools for reading, querying, and modifying parquet files
-in the finances repository data directory.
+in a repository data directory.
 """
 
 import json
