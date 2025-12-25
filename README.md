@@ -1,6 +1,10 @@
 # Parquet MCP Server
 
-MCP server for interacting with parquet files in a repository.
+MCP server for interacting with parquet files in a repository. Provides comprehensive data management with audit logging, rollback capabilities, and semantic search.
+
+## Credits
+
+This is a custom MCP server implementation for parquet file management with audit trail support.
 
 ## Features
 
@@ -407,6 +411,27 @@ The server returns structured error messages in JSON format when operations fail
 - Column not found errors
 - Filter matching errors
 
+## Security Notes
+
+- All write operations create audit log entries for traceability
+- Audit logs are stored in `data/logs/audit_log.parquet`
+- Optional full snapshots can be configured for additional safety
+- Never commit sensitive data files to version control
+
+## Troubleshooting
+
+1. **File Not Found Errors**
+   - Verify the data type exists in `data/[type]/[type].parquet`
+   - Check file permissions
+
+2. **Schema Validation Errors**
+   - Ensure records match the schema defined in `data/schemas/[type]_schema.json`
+   - Check required fields are present
+
+3. **Filter Matching Errors**
+   - Verify filter syntax matches supported operators
+   - Check column names exist in the schema
+
 ## Testing
 
 After installation/updates, run the test script:
@@ -436,4 +461,12 @@ See [IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md) for manual testing pr
 - Null/NaN values are converted to `null` in JSON responses
 - The server runs in stdio mode for MCP communication
 - Audit log entries are never automatically deleted (manual archival if needed)
+
+## License
+
+MIT
+
+## Support
+
+- [GitHub Issues](https://github.com/markmhendrickson/mcp-server-parquet/issues)
 
