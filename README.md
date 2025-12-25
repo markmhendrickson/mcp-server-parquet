@@ -1,6 +1,6 @@
 # Parquet MCP Server
 
-MCP server for interacting with parquet files in the finances repository.
+MCP server for interacting with parquet files in a repository.
 
 ## Features
 
