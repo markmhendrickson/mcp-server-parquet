@@ -39,12 +39,12 @@ except ImportError:
     FUZZY_AVAILABLE = False
 
 # Project root directory
-# Go up from mcp-servers/parquet/parquet_mcp_server.py to workspace root
-PROJECT_ROOT = Path(__file__).parent.parent.parent
-DATA_DIR = PROJECT_ROOT / "data"
-SCHEMAS_DIR = PROJECT_ROOT / "data" / "schemas"
-SNAPSHOTS_DIR = PROJECT_ROOT / "data" / "snapshots"
-LOGS_DIR = PROJECT_ROOT / "data" / "logs"
+# Go up from truth/mcp-servers/parquet/parquet_mcp_server.py to workspace root
+PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
+DATA_DIR = PROJECT_ROOT / "truth" / "data"
+SCHEMAS_DIR = PROJECT_ROOT / "truth" / "data" / "schemas"
+SNAPSHOTS_DIR = PROJECT_ROOT / "truth" / "data" / "snapshots"
+LOGS_DIR = PROJECT_ROOT / "truth" / "data" / "logs"
 AUDIT_LOG_PATH = LOGS_DIR / "audit_log.parquet"
 
 # Backup configuration
@@ -445,6 +445,81 @@ def list_available_data_types() -> List[str]:
     return sorted(data_types)
 
 
+def get_enum_order_from_schema(data_type: str, column: str) -> Optional[List[str]]:
+    """Get enum order from schema metadata if available."""
+    schema = load_json_schema(data_type)
+    if not schema:
+        return None
+    
+    schema_def = schema.get("schema", {})
+    if column not in schema_def:
+        return None
+    
+    column_def = schema_def[column]
+    if isinstance(column_def, dict) and "enum_order" in column_def:
+        return column_def["enum_order"]
+    elif isinstance(column_def, dict) and "enum" in column_def:
+        # If enum is defined but no order, return enum values as-is
+        enum_vals = column_def.get("enum")
+        if isinstance(enum_vals, list):
+            return enum_vals
+    return None
+
+
+def apply_sorting(df: pd.DataFrame, sort_by: List[Dict[str, Any]], data_type: Optional[str] = None) -> pd.DataFrame:
+    """
+    Apply sorting to dataframe with support for custom enum ordering.
+    
+    Args:
+        df: DataFrame to sort
+        sort_by: List of sort specifications, each with:
+            - column: column name
+            - ascending: bool (default: True)
+            - custom_order: optional list for enum ordering
+        data_type: Optional data type for schema lookup
+    """
+    if not sort_by:
+        return df
+    
+    df = df.copy()
+    sort_keys = []
+    sort_ascending = []
+    
+    for sort_spec in sort_by:
+        column = sort_spec["column"]
+        if column not in df.columns:
+            continue
+        
+        ascending = sort_spec.get("ascending", True)
+        custom_order = sort_spec.get("custom_order")
+        
+        # Try to get enum order from schema if not provided
+        if custom_order is None and data_type:
+            custom_order = get_enum_order_from_schema(data_type, column)
+        
+        if custom_order:
+            # Create categorical with custom order
+            df[f"{column}_sort"] = pd.Categorical(
+                df[column],
+                categories=custom_order,
+                ordered=True
+            )
+            sort_keys.append(f"{column}_sort")
+        else:
+            sort_keys.append(column)
+        
+        sort_ascending.append(ascending)
+    
+    if sort_keys:
+        df = df.sort_values(sort_keys, ascending=sort_ascending, na_position='last')
+        # Remove temporary sort columns
+        for col in df.columns:
+            if col.endswith("_sort"):
+                df = df.drop(columns=[col])
+    
+    return df
+
+
 @app.list_tools()
 async def list_tools() -> List[Tool]:
     """List available MCP tools."""
@@ -473,7 +548,7 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="read_parquet",
-            description="Read and query a parquet file with optional filters. Supports enhanced filtering operators: $contains, $starts_with, $ends_with, $regex, $fuzzy, $gt, $gte, $lt, $lte, $in, $ne",
+            description="Read and query a parquet file with optional filters and sorting. Supports enhanced filtering operators: $contains, $starts_with, $ends_with, $regex, $fuzzy, $gt, $gte, $lt, $lte, $in, $ne",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -485,6 +560,23 @@ async def list_tools() -> List[Tool]:
                         "type": "object",
                         "description": "Optional filters to apply. Can use enhanced operators: {\"title\": {\"$contains\": \"therapy\"}} or {\"title\": {\"$fuzzy\": {\"text\": \"therapy\", \"threshold\": 0.7}}}",
                         "additionalProperties": True,
+                    },
+                    "sort_by": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "column": {"type": "string"},
+                                "ascending": {"type": "boolean", "default": True},
+                                "custom_order": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "Custom order for enum values (e.g., [\"critical\", \"high\", \"medium\", \"low\"]). If not provided, will try to get from schema metadata."
+                                }
+                            },
+                            "required": ["column"]
+                        },
+                        "description": "Optional list of sort specifications. Each can have column, ascending (default: true), and custom_order for enum columns."
                     },
                     "limit": {
                         "type": "integer",
@@ -650,7 +742,7 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="get_statistics",
-            description="Get basic statistics about a parquet file",
+            description="Get comprehensive statistics about a parquet file including numeric summaries, date ranges, and categorical distributions",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -658,8 +750,173 @@ async def list_tools() -> List[Tool]:
                         "type": "string",
                         "description": "The data type name (e.g., 'flows', 'transactions', 'tasks')",
                     },
+                    "filters": {
+                        "type": "object",
+                        "description": "Optional filters to apply before calculating statistics (same format as read_parquet filters)",
+                        "additionalProperties": True,
+                    },
+                    "columns": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional list of specific columns to analyze (default: all numeric/date columns)",
+                    },
+                    "include_distribution": {
+                        "type": "boolean",
+                        "description": "Include percentile distribution for numeric columns (default: false)",
+                        "default": False,
+                    },
                 },
                 "required": ["data_type"],
+            },
+        ),
+        Tool(
+            name="aggregate_parquet",
+            description="Perform generic groupby and aggregation operations on any data type. Supports sum, count, avg, mean, min, max, std aggregations.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "data_type": {
+                        "type": "string",
+                        "description": "The data type name (e.g., 'flows', 'transactions', 'tasks')",
+                    },
+                    "group_by": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of columns to group by",
+                    },
+                    "aggregations": {
+                        "type": "object",
+                        "description": "Dictionary of column → aggregation function(s). Functions: sum, count, avg, mean, min, max, std, first, last. Can specify multiple: {\"amount_usd\": [\"sum\", \"count\"]}",
+                        "additionalProperties": True,
+                    },
+                    "filters": {
+                        "type": "object",
+                        "description": "Optional pre-aggregation filters (same format as read_parquet filters)",
+                        "additionalProperties": True,
+                    },
+                    "sort_by": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "column": {"type": "string"},
+                                "ascending": {"type": "boolean", "default": True}
+                            },
+                            "required": ["column"]
+                        },
+                        "description": "Optional sort specifications for aggregated results"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of groups to return (default: 1000)",
+                        "default": 1000,
+                    },
+                },
+                "required": ["data_type", "aggregations"],
+            },
+        ),
+        Tool(
+            name="query_with_date_range",
+            description="Query with date range filtering on any date column. Supports grouping by time period (day, week, month, quarter, year).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "data_type": {
+                        "type": "string",
+                        "description": "The data type name (e.g., 'flows', 'transactions', 'tasks')",
+                    },
+                    "date_column": {
+                        "type": "string",
+                        "description": "Name of date column to filter on",
+                    },
+                    "date_start": {
+                        "type": "string",
+                        "description": "Start date in ISO format (YYYY-MM-DD)",
+                    },
+                    "date_end": {
+                        "type": "string",
+                        "description": "End date in ISO format (YYYY-MM-DD)",
+                    },
+                    "filters": {
+                        "type": "object",
+                        "description": "Optional additional filters (same format as read_parquet filters)",
+                        "additionalProperties": True,
+                    },
+                    "group_by_period": {
+                        "type": "string",
+                        "enum": ["day", "week", "month", "quarter", "year"],
+                        "description": "Optional: Group results by time period",
+                    },
+                    "aggregations": {
+                        "type": "object",
+                        "description": "Optional aggregations to apply when grouping by period (same format as aggregate_parquet)",
+                        "additionalProperties": True,
+                    },
+                    "sort_by": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "column": {"type": "string"},
+                                "ascending": {"type": "boolean", "default": True}
+                            },
+                            "required": ["column"]
+                        },
+                        "description": "Optional sort specifications"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of rows to return (default: 1000)",
+                        "default": 1000,
+                    },
+                },
+                "required": ["data_type", "date_column"],
+            },
+        ),
+        Tool(
+            name="sort_parquet",
+            description="Sort query results by any columns with support for custom enum ordering. Uses schema metadata for enum orders when available.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "data_type": {
+                        "type": "string",
+                        "description": "The data type name (e.g., 'flows', 'transactions', 'tasks')",
+                    },
+                    "sort_by": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "column": {"type": "string"},
+                                "ascending": {"type": "boolean", "default": True},
+                                "custom_order": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "Custom order for enum values (e.g., [\"critical\", \"high\", \"medium\", \"low\"]). If not provided, will try to get from schema metadata."
+                                }
+                            },
+                            "required": ["column"]
+                        },
+                        "description": "List of sort specifications. Each can have column, ascending (default: true), and custom_order for enum columns."
+                    },
+                    "filters": {
+                        "type": "object",
+                        "description": "Optional filters to apply before sorting (same format as read_parquet filters)",
+                        "additionalProperties": True,
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of rows to return (default: 1000)",
+                        "default": 1000,
+                    },
+                    "columns": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional list of column names to return (default: all columns)",
+                    },
+                },
+                "required": ["data_type", "sort_by"],
             },
         ),
         Tool(
@@ -834,6 +1091,11 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             # Apply enhanced filters
             for key, value in filters.items():
                 df = apply_enhanced_filter(df, key, value)
+            
+            # Apply sorting if specified
+            sort_by = arguments.get("sort_by")
+            if sort_by:
+                df = apply_sorting(df, sort_by, data_type)
             
             # Select columns if specified
             if columns:
@@ -1440,6 +1702,9 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
     elif name == "get_statistics":
         data_type = arguments["data_type"]
         file_path = get_parquet_file_path(data_type)
+        filters = arguments.get("filters", {})
+        columns = arguments.get("columns")
+        include_distribution = arguments.get("include_distribution", False)
         
         if not file_path.exists():
             return [TextContent(
@@ -1452,6 +1717,10 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
         try:
             df = pd.read_parquet(file_path)
             
+            # Apply filters if provided
+            for key, value in filters.items():
+                df = apply_enhanced_filter(df, key, value)
+            
             stats = {
                 "data_type": data_type,
                 "file_path": str(file_path),
@@ -1462,18 +1731,68 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
                 "memory_usage_mb": df.memory_usage(deep=True).sum() / 1024 / 1024,
             }
             
-            # Add date range info if date columns exist
-            date_columns = [col for col in df.columns if 'date' in col.lower() or 'time' in col.lower()]
-            for col in date_columns:
-                try:
-                    df[col] = pd.to_datetime(df[col], errors='coerce')
-                    if df[col].notna().any():
-                        stats[f"{col}_range"] = {
-                            "min": str(df[col].min()),
-                            "max": str(df[col].max()),
+            # Analyze numeric columns
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if columns:
+                numeric_cols = [c for c in numeric_cols if c in columns]
+            
+            if len(numeric_cols) > 0:
+                stats["numeric_statistics"] = {}
+                for col in numeric_cols:
+                    col_stats = {
+                        "count": int(df[col].count()),
+                        "sum": float(df[col].sum()) if df[col].dtype in [np.float64, np.float32, np.int64, np.int32] else None,
+                        "mean": float(df[col].mean()) if df[col].dtype in [np.float64, np.float32] else None,
+                        "min": float(df[col].min()) if df[col].dtype in [np.float64, np.float32] else None,
+                        "max": float(df[col].max()) if df[col].dtype in [np.float64, np.float32] else None,
+                        "std": float(df[col].std()) if df[col].dtype in [np.float64, np.float32] else None,
+                    }
+                    if include_distribution:
+                        col_stats["percentiles"] = {
+                            "25": float(df[col].quantile(0.25)),
+                            "50": float(df[col].quantile(0.50)),
+                            "75": float(df[col].quantile(0.75)),
+                            "90": float(df[col].quantile(0.90)),
+                            "95": float(df[col].quantile(0.95)),
+                            "99": float(df[col].quantile(0.99)),
                         }
-                except:
-                    pass
+                    stats["numeric_statistics"][col] = col_stats
+            
+            # Analyze date columns
+            date_columns = [col for col in df.columns if 'date' in col.lower() or 'time' in col.lower() or df[col].dtype.name.startswith('datetime')]
+            if columns:
+                date_columns = [c for c in date_columns if c in columns]
+            
+            if len(date_columns) > 0:
+                stats["date_statistics"] = {}
+                for col in date_columns:
+                    try:
+                        df_date = pd.to_datetime(df[col], errors='coerce')
+                        if df_date.notna().any():
+                            stats["date_statistics"][col] = {
+                                "min": str(df_date.min()),
+                                "max": str(df_date.max()),
+                                "range_days": int((df_date.max() - df_date.min()).days) if df_date.notna().sum() > 1 else 0,
+                                "unique_count": int(df_date.nunique()),
+                                "null_count": int(df_date.isna().sum()),
+                            }
+                    except:
+                        pass
+            
+            # Analyze categorical columns
+            categorical_cols = df.select_dtypes(include=['object', 'category']).columns
+            if columns:
+                categorical_cols = [c for c in categorical_cols if c in columns]
+            
+            if len(categorical_cols) > 0:
+                stats["categorical_statistics"] = {}
+                for col in categorical_cols[:10]:  # Limit to first 10 to avoid huge output
+                    value_counts = df[col].value_counts()
+                    stats["categorical_statistics"][col] = {
+                        "unique_count": int(value_counts.count()),
+                        "null_count": int(df[col].isna().sum()),
+                        "most_common": value_counts.head(10).to_dict(),
+                    }
             
             return [TextContent(
                 type="text",
@@ -1481,10 +1800,12 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             )]
         
         except Exception as e:
+            import traceback
             return [TextContent(
                 type="text",
                 text=json.dumps({
                     "error": str(e),
+                    "traceback": traceback.format_exc(),
                 }, indent=2)
             )]
     
@@ -2021,6 +2342,339 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
                     "embeddings_generated": generated_count,
                     "embeddings_reused": reused_count,
                     "embeddings_file": str(embeddings_path),
+                }, indent=2, default=str)
+            )]
+        
+        except Exception as e:
+            import traceback
+            return [TextContent(
+                type="text",
+                text=json.dumps({
+                    "error": str(e),
+                    "traceback": traceback.format_exc(),
+                }, indent=2)
+            )]
+    
+    elif name == "aggregate_parquet":
+        data_type = arguments["data_type"]
+        aggregations = arguments["aggregations"]
+        group_by = arguments.get("group_by", [])
+        filters = arguments.get("filters", {})
+        sort_by = arguments.get("sort_by")
+        limit = arguments.get("limit", 1000)
+        
+        file_path = get_parquet_file_path(data_type)
+        
+        if not file_path.exists():
+            return [TextContent(
+                type="text",
+                text=json.dumps({
+                    "error": f"Parquet file not found: {file_path}",
+                }, indent=2)
+            )]
+        
+        try:
+            df = pd.read_parquet(file_path)
+            
+            # Apply filters
+            for key, value in filters.items():
+                df = apply_enhanced_filter(df, key, value)
+            
+            # Validate group_by columns
+            if group_by:
+                missing_cols = [c for c in group_by if c not in df.columns]
+                if missing_cols:
+                    return [TextContent(
+                        type="text",
+                        text=json.dumps({
+                            "error": f"Group by columns not found: {missing_cols}",
+                            "available_columns": list(df.columns),
+                        }, indent=2)
+                    )]
+            
+            # Validate aggregation columns
+            agg_cols = list(aggregations.keys())
+            missing_agg_cols = [c for c in agg_cols if c not in df.columns]
+            if missing_agg_cols:
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "error": f"Aggregation columns not found: {missing_agg_cols}",
+                        "available_columns": list(df.columns),
+                    }, indent=2)
+                )]
+            
+            # Build aggregation dict
+            agg_dict = {}
+            for col, funcs in aggregations.items():
+                if isinstance(funcs, str):
+                    funcs = [funcs]
+                elif not isinstance(funcs, list):
+                    funcs = [funcs]
+                
+                for func in funcs:
+                    if func in ['sum', 'count', 'mean', 'avg', 'min', 'max', 'std', 'first', 'last']:
+                        if func == 'avg':
+                            func = 'mean'
+                        agg_dict[col] = agg_dict.get(col, []) + [func]
+            
+            # Perform aggregation
+            if group_by:
+                grouped = df.groupby(group_by)
+                result_df = grouped.agg(agg_dict)
+                # Flatten MultiIndex column names
+                if isinstance(result_df.columns, pd.MultiIndex):
+                    result_df.columns = [f"{col}_{func}" if col != func else col for col, func in result_df.columns]
+                result_df = result_df.reset_index()
+            else:
+                # Aggregate entire dataframe
+                result_df = df.agg(agg_dict)
+                result_df = result_df.to_frame().T
+                # Flatten column names - build from agg_dict structure
+                flat_cols = []
+                for col, funcs in agg_dict.items():
+                    for func in funcs:
+                        flat_cols.append(f"{col}_{func}")
+                result_df.columns = flat_cols
+            
+            # Apply sorting
+            if sort_by:
+                result_df = apply_sorting(result_df, sort_by, data_type)
+            
+            # Apply limit
+            result_df = result_df.head(limit)
+            
+            # Convert to JSON
+            result = result_df.to_dict(orient='records')
+            
+            # Convert date/datetime objects to strings
+            for record in result:
+                for key, value in record.items():
+                    if pd.isna(value):
+                        record[key] = None
+                    elif isinstance(value, (pd.Timestamp, datetime)):
+                        record[key] = value.isoformat()
+                    elif isinstance(value, date):
+                        record[key] = value.isoformat()
+                    elif isinstance(value, (np.integer, np.floating)):
+                        record[key] = float(value) if isinstance(value, np.floating) else int(value)
+            
+            return [TextContent(
+                type="text",
+                text=json.dumps({
+                    "count": len(result),
+                    "total_groups": len(result_df) if limit >= len(result_df) else f"{len(result_df)}+",
+                    "data": result,
+                }, indent=2, default=str)
+            )]
+        
+        except Exception as e:
+            import traceback
+            return [TextContent(
+                type="text",
+                text=json.dumps({
+                    "error": str(e),
+                    "traceback": traceback.format_exc(),
+                }, indent=2)
+            )]
+    
+    elif name == "query_with_date_range":
+        data_type = arguments["data_type"]
+        date_column = arguments["date_column"]
+        date_start = arguments.get("date_start")
+        date_end = arguments.get("date_end")
+        filters = arguments.get("filters", {})
+        group_by_period = arguments.get("group_by_period")
+        aggregations = arguments.get("aggregations")
+        sort_by = arguments.get("sort_by")
+        limit = arguments.get("limit", 1000)
+        
+        file_path = get_parquet_file_path(data_type)
+        
+        if not file_path.exists():
+            return [TextContent(
+                type="text",
+                text=json.dumps({
+                    "error": f"Parquet file not found: {file_path}",
+                }, indent=2)
+            )]
+        
+        try:
+            df = pd.read_parquet(file_path)
+            
+            # Validate date column
+            if date_column not in df.columns:
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "error": f"Date column not found: {date_column}",
+                        "available_columns": list(df.columns),
+                    }, indent=2)
+                )]
+            
+            # Convert date column to datetime
+            df[date_column] = pd.to_datetime(df[date_column], errors='coerce')
+            
+            # Apply date range filters
+            if date_start:
+                date_start_dt = pd.to_datetime(date_start)
+                df = df[df[date_column] >= date_start_dt]
+            
+            if date_end:
+                date_end_dt = pd.to_datetime(date_end)
+                df = df[df[date_column] <= date_end_dt]
+            
+            # Apply additional filters
+            for key, value in filters.items():
+                df = apply_enhanced_filter(df, key, value)
+            
+            # Group by period if requested
+            if group_by_period:
+                if group_by_period == "day":
+                    df['_period'] = df[date_column].dt.date
+                elif group_by_period == "week":
+                    df['_period'] = df[date_column].dt.to_period('W')
+                elif group_by_period == "month":
+                    df['_period'] = df[date_column].dt.to_period('M')
+                elif group_by_period == "quarter":
+                    df['_period'] = df[date_column].dt.to_period('Q')
+                elif group_by_period == "year":
+                    df['_period'] = df[date_column].dt.to_period('Y')
+                
+                if aggregations:
+                    # Build aggregation dict
+                    agg_dict = {}
+                    for col, funcs in aggregations.items():
+                        if isinstance(funcs, str):
+                            funcs = [funcs]
+                        elif not isinstance(funcs, list):
+                            funcs = [funcs]
+                        
+                        for func in funcs:
+                            if func in ['sum', 'count', 'mean', 'avg', 'min', 'max', 'std']:
+                                if func == 'avg':
+                                    func = 'mean'
+                                agg_dict[col] = agg_dict.get(col, []) + [func]
+                    
+                    grouped = df.groupby('_period')
+                    result_df = grouped.agg(agg_dict)
+                    # Flatten MultiIndex column names
+                    if isinstance(result_df.columns, pd.MultiIndex):
+                        result_df.columns = [f"{col}_{func}" if col != func else col for col, func in result_df.columns]
+                    result_df = result_df.reset_index()
+                    result_df['period'] = result_df['_period'].astype(str)
+                    result_df = result_df.drop(columns=['_period'])
+                else:
+                    # Just group by period, return count
+                    result_df = df.groupby('_period').size().reset_index(name='count')
+                    result_df['period'] = result_df['_period'].astype(str)
+                    result_df = result_df.drop(columns=['_period'])
+            else:
+                result_df = df.copy()
+            
+            # Apply sorting
+            if sort_by:
+                result_df = apply_sorting(result_df, sort_by, data_type)
+            
+            # Apply limit
+            result_df = result_df.head(limit)
+            
+            # Convert to JSON
+            result = result_df.to_dict(orient='records')
+            
+            # Convert date/datetime objects to strings
+            for record in result:
+                for key, value in record.items():
+                    if pd.isna(value):
+                        record[key] = None
+                    elif isinstance(value, (pd.Timestamp, datetime)):
+                        record[key] = value.isoformat()
+                    elif isinstance(value, date):
+                        record[key] = value.isoformat()
+                    elif isinstance(value, (np.integer, np.floating)):
+                        record[key] = float(value) if isinstance(value, np.floating) else int(value)
+            
+            return [TextContent(
+                type="text",
+                text=json.dumps({
+                    "count": len(result),
+                    "total_rows": len(result_df) if limit >= len(result_df) else f"{len(result_df)}+",
+                    "data": result,
+                }, indent=2, default=str)
+            )]
+        
+        except Exception as e:
+            import traceback
+            return [TextContent(
+                type="text",
+                text=json.dumps({
+                    "error": str(e),
+                    "traceback": traceback.format_exc(),
+                }, indent=2)
+            )]
+    
+    elif name == "sort_parquet":
+        data_type = arguments["data_type"]
+        sort_by = arguments["sort_by"]
+        filters = arguments.get("filters", {})
+        limit = arguments.get("limit", 1000)
+        columns = arguments.get("columns")
+        
+        file_path = get_parquet_file_path(data_type)
+        
+        if not file_path.exists():
+            return [TextContent(
+                type="text",
+                text=json.dumps({
+                    "error": f"Parquet file not found: {file_path}",
+                }, indent=2)
+            )]
+        
+        try:
+            df = pd.read_parquet(file_path)
+            
+            # Apply filters
+            for key, value in filters.items():
+                df = apply_enhanced_filter(df, key, value)
+            
+            # Apply sorting
+            df = apply_sorting(df, sort_by, data_type)
+            
+            # Select columns if specified
+            if columns:
+                missing_cols = [c for c in columns if c not in df.columns]
+                if missing_cols:
+                    return [TextContent(
+                        type="text",
+                        text=json.dumps({
+                            "error": f"Columns not found: {missing_cols}",
+                            "available_columns": list(df.columns),
+                        }, indent=2)
+                    )]
+                df = df[columns]
+            
+            # Apply limit
+            df = df.head(limit)
+            
+            # Convert to JSON
+            result = df.to_dict(orient='records')
+            
+            # Convert date/datetime objects to strings
+            for record in result:
+                for key, value in record.items():
+                    if pd.isna(value):
+                        record[key] = None
+                    elif isinstance(value, (pd.Timestamp, datetime)):
+                        record[key] = value.isoformat()
+                    elif isinstance(value, date):
+                        record[key] = value.isoformat()
+            
+            return [TextContent(
+                type="text",
+                text=json.dumps({
+                    "count": len(result),
+                    "total_rows": len(df) if limit >= len(df) else f"{len(df)}+",
+                    "data": result,
                 }, indent=2, default=str)
             )]
         
