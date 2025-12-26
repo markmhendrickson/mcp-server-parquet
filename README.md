@@ -23,11 +23,29 @@ This is a custom MCP server implementation for parquet file management with audi
 ## Installation
 
 ```bash
-cd mcp-servers/parquet
+cd truth/mcp-servers/parquet
 pip install -r requirements.txt
 ```
 
 ## Configuration
+
+### Data Directory
+
+The server uses the following priority to locate the data directory:
+
+1. **Environment Variable** (highest priority):
+   ```bash
+   export PARQUET_DATA_DIR="/path/to/your/data/directory"
+   ```
+
+2. **Auto-detection** (for backward compatibility):
+   - Automatically detects parent repository structure
+   - Looks for `truth/data/` directory in common locations
+
+3. **Default** (if no structure found):
+   - Uses `~/.config/parquet-mcp/data/` as fallback
+
+**Note:** The MCP server is portable and can be used with any data directory structure.
 
 ### Cursor Configuration
 
@@ -38,11 +56,13 @@ Add to your Cursor MCP settings (typically `~/.cursor/mcp.json` or Cursor settin
 {
   "mcpServers": {
     "parquet": {
-      "command": "python",
+      "command": "python3",
       "args": [
-        "$REPO_ROOT/mcp-servers/parquet/parquet_mcp_server.py"
+        "/path/to/parquet_mcp_server.py"
       ],
-      "env": {}
+      "env": {
+        "PARQUET_DATA_DIR": "/path/to/your/data/directory"
+      }
     }
   }
 }
@@ -53,11 +73,12 @@ Add to your Cursor MCP settings (typically `~/.cursor/mcp.json` or Cursor settin
 {
   "mcpServers": {
     "parquet": {
-      "command": "python",
+      "command": "python3",
       "args": [
-        "$REPO_ROOT/mcp-servers/parquet/parquet_mcp_server.py"
+        "/path/to/parquet_mcp_server.py"
       ],
       "env": {
+        "PARQUET_DATA_DIR": "/path/to/your/data/directory",
         "MCP_FULL_SNAPSHOTS": "true",
         "MCP_SNAPSHOT_FREQUENCY": "weekly"
       }
@@ -65,6 +86,8 @@ Add to your Cursor MCP settings (typically `~/.cursor/mcp.json` or Cursor settin
   }
 }
 ```
+
+**Note:** Replace `/path/to/parquet_mcp_server.py` with the actual path to the server file.
 
 ### Claude Desktop Configuration
 
@@ -74,14 +97,19 @@ Add to `claude_desktop_config.json` (typically `~/Library/Application Support/Cl
 {
   "mcpServers": {
     "parquet": {
-      "command": "python",
+      "command": "python3",
       "args": [
-        "$REPO_ROOT/mcp-servers/parquet/parquet_mcp_server.py"
-      ]
+        "/path/to/parquet_mcp_server.py"
+      ],
+      "env": {
+        "PARQUET_DATA_DIR": "/path/to/your/data/directory"
+      }
     }
   }
 }
 ```
+
+**Note:** Replace `/path/to/parquet_mcp_server.py` with the actual path to the server file.
 
 ## Available Tools
 

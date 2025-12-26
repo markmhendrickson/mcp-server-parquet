@@ -5,7 +5,7 @@
 ### 1. Install Dependencies
 
 ```bash
-cd mcp-servers/parquet
+cd truth/truth/mcp-servers/parquet
 pip install -r requirements.txt
 ```
 
@@ -43,7 +43,7 @@ The server should start and wait for stdio input (this is normal for MCP servers
     "parquet": {
       "command": "python3",
       "args": [
-        "$REPO_ROOT/mcp-servers/parquet/parquet_mcp_server.py"
+        "$REPO_ROOT/truth/mcp-servers/parquet/parquet_mcp_server.py"
       ],
       "env": {}
     }
@@ -68,7 +68,7 @@ The server should start and wait for stdio input (this is normal for MCP servers
     "parquet": {
       "command": "python3",
       "args": [
-        "$REPO_ROOT/mcp-servers/parquet/parquet_mcp_server.py"
+        "$REPO_ROOT/truth/mcp-servers/parquet/parquet_mcp_server.py"
       ]
     }
   }
