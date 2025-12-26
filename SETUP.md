@@ -5,7 +5,7 @@
 ### 1. Install Dependencies
 
 ```bash
-cd truth/truth/mcp-servers/parquet
+cd truth/mcp-servers/parquet
 pip install -r requirements.txt
 ```
 
