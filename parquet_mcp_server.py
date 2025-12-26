@@ -2466,13 +2466,25 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             else:
                 # Aggregate entire dataframe
                 result_df = df.agg(agg_dict)
-                result_df = result_df.to_frame().T
+                # Handle both Series and DataFrame results
+                if isinstance(result_df, pd.Series):
+                    result_df = result_df.to_frame().T
+                else:
+                    # Already a DataFrame - reshape to single row with flattened columns
+                    # result_df structure: index=original columns, columns=aggregation functions
+                    # Convert to Series with MultiIndex, then to DataFrame row
+                    result_series = result_df.stack()
+                    # Flatten MultiIndex to column names like 'col1_sum', 'col1_count'
+                    result_series.index = [f"{col}_{func}" for col, func in result_series.index]
+                    result_df = result_series.to_frame().T
                 # Flatten column names - build from agg_dict structure
                 flat_cols = []
                 for col, funcs in agg_dict.items():
                     for func in funcs:
                         flat_cols.append(f"{col}_{func}")
-                result_df.columns = flat_cols
+                # Only set columns if they match expected count
+                if len(result_df.columns) == len(flat_cols):
+                    result_df.columns = flat_cols
             
             # Apply sorting
             if sort_by:
