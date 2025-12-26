@@ -113,6 +113,29 @@ Add to `claude_desktop_config.json` (typically `~/Library/Application Support/Cl
 
 ## Available Tools
 
+### Tool Selection Guide
+
+**For counting records:** Use `get_statistics` - returns `row_count` efficiently without loading data.
+
+**For retrieving data:** Use `read_parquet` - returns actual records with filtering, sorting, and column selection.
+- **Do not call `get_schema`** unless you need schema information (field names, types, constraints) to complete the task. Data queries via `read_parquet` return all necessary field information.
+
+**For metadata:** Use `get_schema` only when you need to understand the schema structure (required fields, valid values, data types) to build queries, filters, or add/update records. Do not call it for routine data retrieval tasks.
+
+**For modifications:** Use `add_record`, `update_records`, `upsert_record`, or `delete_records` with audit logging.
+
+---
+
+## Proactive Memory Storage
+
+**Source of Truth:** Instructions for proactive memory storage are embedded in the MCP server:
+- **Tool descriptions** - `add_record`, `update_records`, and `upsert_record` descriptions include requirements
+- **Prompt** - `data_persistence_guidance` prompt (via `list_prompts`/`get_prompt`) provides detailed guidance
+
+Agents see these instructions when listing/using tools. This README is for human reference only.
+
+---
+
 ### `list_data_types`
 List all available data types (parquet files) in the data directory.
 
@@ -124,6 +147,10 @@ Get the schema definition for a data type.
 
 ### `read_parquet`
 Read and query a parquet file with optional filters. Supports enhanced filtering operators.
+
+**Use when:** You need to retrieve actual data records (rows) from the file.
+
+**Do not use for:** Counting records - use `get_statistics` instead, which returns row count efficiently.
 
 **Parameters:**
 - `data_type` (required): The data type name
@@ -292,7 +319,16 @@ Delete records from a parquet file. Creates audit log entry and optional snapsho
 ```
 
 ### `get_statistics`
-Get basic statistics about a parquet file.
+Get comprehensive statistics about a parquet file including row count, column information, date ranges, and categorical distributions.
+
+**Use when:** You need to know how many records exist, get file metadata, or analyze data distributions. This is the efficient way to answer "how many" questions.
+
+**Returns:**
+- `row_count`: Total number of records (use this for count queries)
+- `column_count`: Number of columns
+- `date_statistics`: Min/max dates and ranges for date columns
+- `categorical_statistics`: Value distributions for categorical columns
+- Column types and memory usage
 
 **Parameters:**
 - `data_type` (required): The data type name
