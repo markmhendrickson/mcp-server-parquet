@@ -38,13 +38,37 @@ try:
 except ImportError:
     FUZZY_AVAILABLE = False
 
-# Project root directory
-# Go up from truth/mcp-servers/parquet/parquet_mcp_server.py to workspace root
-PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
-DATA_DIR = PROJECT_ROOT / "truth" / "data"
-SCHEMAS_DIR = PROJECT_ROOT / "truth" / "data" / "schemas"
-SNAPSHOTS_DIR = PROJECT_ROOT / "truth" / "data" / "snapshots"
-LOGS_DIR = PROJECT_ROOT / "truth" / "data" / "logs"
+# Data directory configuration (portable)
+# Use environment variable or fall back to detecting parent repo structure
+DATA_DIR_ENV = os.environ.get("PARQUET_DATA_DIR")
+if DATA_DIR_ENV:
+    # Use environment variable if provided
+    DATA_DIR = Path(DATA_DIR_ENV)
+else:
+    # Fall back to detecting parent repo structure (for backward compatibility)
+    server_dir = Path(__file__).parent
+    # Try common parent structures
+    possible_roots = [
+        server_dir.parent.parent.parent.parent,  # truth/mcp-servers/parquet -> truth -> personal
+        server_dir.parent.parent.parent,  # mcp-servers/parquet -> mcp-servers -> truth
+    ]
+    
+    DATA_DIR = None
+    for root in possible_roots:
+        test_data_dir = root / "truth" / "data"
+        if test_data_dir.exists() and (test_data_dir / "schemas").exists():
+            DATA_DIR = test_data_dir
+            break
+    
+    # If no parent structure found, use current directory or create config-based path
+    if DATA_DIR is None:
+        # Default to a config directory in user's home
+        DATA_DIR = Path.home() / ".config" / "parquet-mcp" / "data"
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+SCHEMAS_DIR = DATA_DIR / "schemas"
+SNAPSHOTS_DIR = DATA_DIR / "snapshots"
+LOGS_DIR = DATA_DIR / "logs"
 AUDIT_LOG_PATH = LOGS_DIR / "audit_log.parquet"
 
 # Backup configuration
@@ -295,8 +319,21 @@ def get_pyarrow_schema_for_write(data_type: str) -> Optional[pa.Schema]:
     try:
         # Try to import from scripts module
         import sys
-        scripts_path = PROJECT_ROOT / "scripts"
-        if str(scripts_path) not in sys.path:
+        # Try to find scripts directory (optional, for backward compatibility)
+        scripts_path = None
+        server_dir = Path(__file__).parent
+        possible_roots = [
+            server_dir.parent.parent.parent.parent,  # truth/mcp-servers/parquet -> truth -> personal
+            server_dir.parent.parent.parent,  # mcp-servers/parquet -> mcp-servers -> truth
+        ]
+        
+        for root in possible_roots:
+            test_scripts = root / "execution" / "scripts"
+            if test_scripts.exists():
+                scripts_path = test_scripts
+                break
+        
+        if scripts_path and str(scripts_path) not in sys.path:
             sys.path.insert(0, str(scripts_path))
         from parquet_schema_definitions import get_pyarrow_schema
         return get_pyarrow_schema(data_type)
