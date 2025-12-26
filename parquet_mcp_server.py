@@ -571,7 +571,7 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="get_schema",
-            description="Get the schema definition for a data type",
+            description="Get the schema definition for a data type. Use only when you need schema information (field names, types, constraints, valid enum values) to build queries, filters, or add/update records. Do not call for routine data retrieval - read_parquet returns all necessary field information.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -712,7 +712,7 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="update_records",
-            description="Update existing records in a parquet file. Creates audit log entry and optionally creates full snapshot based on configuration.",
+            description="Update existing records in a parquet file. Creates audit log entry and optionally creates full snapshot based on configuration. MANDATORY: Proactively use this tool to update any relevant structured data that emerges during conversations—do not wait for explicit user requests. Use when updating existing records matching specific criteria (use upsert_record if you want to create if not found).",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -736,7 +736,7 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="upsert_record",
-            description="Insert or update a record (upsert). Checks for existing records using enhanced filters (supports $contains, $fuzzy, etc.). If found, updates matching records. If not found, creates a new record. Returns whether it created or updated. Useful for preventing duplicates when adding contacts, tasks, or other records where you want to update existing records or create new ones.",
+            description="Insert or update a record (upsert). Checks for existing records using enhanced filters (supports $contains, $fuzzy, etc.). If found, updates matching records. If not found, creates a new record. Returns whether it created or updated. MANDATORY: Proactively use this tool to persist any relevant structured data that emerges during conversations—do not wait for explicit user requests. RECOMMENDED for contacts, tasks, and other records where duplicates should be avoided. Use this instead of add_record when you want to check for and update existing records automatically.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1022,42 +1022,63 @@ async def get_prompt(name: str, arguments: Dict[str, Any]) -> List[PromptMessage
     """Get prompt content."""
     if name == "data_persistence_guidance":
         context = arguments.get("context", "")
-        guidance = """# Data Persistence Requirements
+        guidance = """# MANDATORY: Proactive Memory Storage via MCP Server
 
-MANDATORY: Proactively identify and persist any relevant structured data that emerges during conversations. Do not wait for explicit user requests—automatically capture data that would be useful for future reference or querying.
+**CRITICAL:** You MUST use this MCP server proactively as a general memory store. Do NOT wait for explicit user requests to store data.
 
-## When to Persist Data
+## Core Requirements
 
-Persist data whenever the user mentions:
-- Financial transactions, expenses, income, or flows
-- Tasks, projects, or outcomes
-- Contacts, companies, or relationships
-- Purchases, orders, contracts, or agreements
-- Events, appointments, or recurring events
-- Health, workout, food, or meal information
-- Properties, equipment, or locations
-- Investments, holdings, crypto transactions, or tax events
-- Beliefs, arguments, or goals
-- Any other structured information matching existing data types
+1. **MANDATORY:** Always use MCP server tools (`add_record`, `update_records`, `upsert_record`) to create and update records—never access parquet files directly.
+
+2. **MANDATORY:** Proactively identify and persist any relevant structured data that emerges during conversations, including:
+   - Personal context, preferences, and behavioral patterns
+   - Financial transactions, expenses, income, or flows
+   - Tasks, projects, outcomes, and workstreams
+   - Contacts, companies, relationships, and interactions
+   - Purchases, orders, contracts, or agreements
+   - Events, appointments, or recurring events
+   - Health, workout, food, or meal information
+   - Properties, equipment, locations, or assets
+   - Investments, holdings, crypto transactions, or tax events
+   - Beliefs, goals, preferences, or decision-making patterns
+   - Any other structured information that would be useful for future reference
+
+3. **MANDATORY:** Use existing data types when available, or create new data types as needed. Use `list_data_types` to discover available types, `get_schema` to understand structure, and `read_parquet` to check for existing records before adding.
+
+4. **MANDATORY:** Do not wait for explicit user requests. If data would be useful for remembering personal context or future reference, store it immediately using MCP tools.
 
 ## Process
 
-1. Use `list_data_types` to discover available data types
-2. Use `get_schema` to understand the schema for the identified data type
-3. Use `read_parquet` to check for existing records (avoid duplicates)
-4. Use `upsert_record` to add new entries or update existing ones (recommended for contacts, tasks, and other records where duplicates should be avoided)
-5. Alternatively, use `add_record` to add new entries or `update_records` if matching record exists
-6. Link related data via appropriate ID fields
+1. **Identify relevant data** during conversation—any structured information that would help remember user context
+2. **Check existing data types** using `list_data_types` to find appropriate type
+3. **Review schema** using `get_schema` to understand required fields and structure
+4. **Check for duplicates** using `read_parquet` with appropriate filters
+5. **Create or update records** using:
+   - `upsert_record` (recommended for contacts, tasks, and other records where duplicates should be avoided)
+   - `add_record` (for new entries when duplicates are acceptable)
+   - `update_records` (when updating existing records matching specific criteria)
+6. **Link related data** via appropriate ID fields when relationships exist
 
 ## Examples
 
-- User mentions subscription → Add to `fixed_costs`
-- User discusses property maintenance → Add to `flows`
-- User shares contact details → Update `contacts`
-- User mentions workout → Add to `workouts`
-- User discusses task → Create/update `tasks` with outcome/project links
+- User mentions subscription cost → **Immediately** add to `fixed_costs` using `add_record`
+- User discusses property maintenance expense → **Immediately** add to `flows` using `add_record`
+- User shares contact details → **Immediately** update `contacts` using `upsert_record` (check for existing contact first)
+- User mentions workout → **Immediately** add to `workouts` using `add_record`
+- User discusses task → **Immediately** create/update `tasks` with outcome/project links using `upsert_record`
+- User expresses preference or behavioral pattern → **Immediately** store in appropriate data type or create new type if needed
+- User mentions account creation → **Immediately** add to `user_accounts` using `upsert_record`
 
-Always use MCP tools—never access parquet files directly.
+## Prohibited Actions
+
+- ❌ **NEVER** access parquet files directly with Python scripts or file operations
+- ❌ **NEVER** wait for explicit user request to store relevant data
+- ❌ **NEVER** skip storing data because "user didn't ask for it"
+- ❌ **NEVER** bypass MCP server tools for any data operations
+
+## Default Behavior
+
+Treat every conversation as an opportunity to build and maintain the user's personal context memory. Store data proactively, not reactively.
 
 Context: {context}
 """.format(context=context or "General conversation")
