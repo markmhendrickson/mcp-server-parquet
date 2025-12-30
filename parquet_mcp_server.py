@@ -23,6 +23,13 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent, Prompt, PromptArgument, PromptMessage
 
+# Try to load dotenv for .env file support
+try:
+    from dotenv import load_dotenv
+    DOTENV_AVAILABLE = True
+except ImportError:
+    DOTENV_AVAILABLE = False
+
 # Optional OpenAI for embeddings
 try:
     from openai import OpenAI
@@ -38,33 +45,27 @@ try:
 except ImportError:
     FUZZY_AVAILABLE = False
 
-# Data directory configuration (portable)
-# Use environment variable or fall back to detecting parent repo structure
-DATA_DIR_ENV = os.environ.get("PARQUET_DATA_DIR")
-if DATA_DIR_ENV:
-    # Use environment variable if provided
-    DATA_DIR = Path(DATA_DIR_ENV)
-else:
-    # Fall back to detecting parent repo structure (for backward compatibility)
-    server_dir = Path(__file__).parent
-    # Try common parent structures
-    possible_roots = [
-        server_dir.parent.parent.parent.parent,  # truth/mcp-servers/parquet -> truth -> personal
-        server_dir.parent.parent.parent,  # mcp-servers/parquet -> mcp-servers -> truth
-    ]
-    
-    DATA_DIR = None
-    for root in possible_roots:
-        test_data_dir = root / "truth" / "data"
-        if test_data_dir.exists() and (test_data_dir / "schemas").exists():
-            DATA_DIR = test_data_dir
-            break
-    
-    # If no parent structure found, use current directory or create config-based path
-    if DATA_DIR is None:
-        # Default to a config directory in user's home
-        DATA_DIR = Path.home() / ".config" / "parquet-mcp" / "data"
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
+# Data directory configuration
+# Loads from environment variable or .env file (relative to repo root)
+DATA_DIR_ENV = os.environ.get("DATA_DIR")
+if not DATA_DIR_ENV:
+    # Try loading from .env file in repo root
+    if DOTENV_AVAILABLE:
+        # Find repo root (parent of truth/mcp-servers/parquet)
+        script_dir = Path(__file__).parent
+        repo_root = script_dir.parent.parent.parent
+        env_file = repo_root / ".env"
+        if env_file.exists():
+            load_dotenv(env_file)
+            DATA_DIR_ENV = os.environ.get("DATA_DIR")
+
+if not DATA_DIR_ENV:
+    raise RuntimeError(
+        "DATA_DIR environment variable is not set. "
+        "Please set DATA_DIR in your .env file or as an environment variable. "
+        "Example: DATA_DIR=\"/absolute/path/to/data\" in .env file"
+    )
+DATA_DIR = Path(DATA_DIR_ENV)
 
 SCHEMAS_DIR = DATA_DIR / "schemas"
 SNAPSHOTS_DIR = DATA_DIR / "snapshots"
@@ -505,13 +506,14 @@ def get_enum_order_from_schema(data_type: str, column: str) -> Optional[List[str
 
 def apply_sorting(df: pd.DataFrame, sort_by: List[Dict[str, Any]], data_type: Optional[str] = None) -> pd.DataFrame:
     """
-    Apply sorting to dataframe with support for custom enum ordering.
+    Apply sorting to dataframe with support for custom enum ordering and null handling.
     
     Args:
         df: DataFrame to sort
         sort_by: List of sort specifications, each with:
             - column: column name
             - ascending: bool (default: True)
+            - na_position: str (default: 'last') - where to place nulls: 'first' or 'last'
             - custom_order: optional list for enum ordering
         data_type: Optional data type for schema lookup
     """
@@ -521,6 +523,7 @@ def apply_sorting(df: pd.DataFrame, sort_by: List[Dict[str, Any]], data_type: Op
     df = df.copy()
     sort_keys = []
     sort_ascending = []
+    na_positions = []
     
     for sort_spec in sort_by:
         column = sort_spec["column"]
@@ -528,6 +531,7 @@ def apply_sorting(df: pd.DataFrame, sort_by: List[Dict[str, Any]], data_type: Op
             continue
         
         ascending = sort_spec.get("ascending", True)
+        na_position = sort_spec.get("na_position", "last")
         custom_order = sort_spec.get("custom_order")
         
         # Try to get enum order from schema if not provided
@@ -546,9 +550,13 @@ def apply_sorting(df: pd.DataFrame, sort_by: List[Dict[str, Any]], data_type: Op
             sort_keys.append(column)
         
         sort_ascending.append(ascending)
+        na_positions.append(na_position)
     
     if sort_keys:
-        df = df.sort_values(sort_keys, ascending=sort_ascending, na_position='last')
+        # Use the na_position from the first sort column (pandas only supports one na_position)
+        # If multiple columns have different na_position, use the first one
+        primary_na_position = na_positions[0] if na_positions else 'last'
+        df = df.sort_values(sort_keys, ascending=sort_ascending, na_position=primary_na_position)
         # Remove temporary sort columns
         for col in df.columns:
             if col.endswith("_sort"):
@@ -605,6 +613,12 @@ async def list_tools() -> List[Tool]:
                             "properties": {
                                 "column": {"type": "string"},
                                 "ascending": {"type": "boolean", "default": True},
+                                "na_position": {
+                                    "type": "string",
+                                    "enum": ["last", "first"],
+                                    "default": "last",
+                                    "description": "Where to place null/NaN values when sorting: 'last' (default) or 'first'"
+                                },
                                 "custom_order": {
                                     "type": "array",
                                     "items": {"type": "string"},
@@ -613,7 +627,7 @@ async def list_tools() -> List[Tool]:
                             },
                             "required": ["column"]
                         },
-                        "description": "Optional list of sort specifications. Each can have column, ascending (default: true), and custom_order for enum columns."
+                        "description": "Optional list of sort specifications. Each can have column, ascending (default: true), na_position (default: 'last'), and custom_order for enum columns."
                     },
                     "limit": {
                         "type": "integer",
@@ -1216,10 +1230,8 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             )]
         
         try:
-            # Create full snapshot if configured to do so
-            snapshot_path = None
-            if should_create_full_snapshot(data_type):
-                snapshot_path = create_snapshot(file_path)
+            # Always create snapshot before modification (per policy)
+            snapshot_path = create_snapshot(file_path)
             
             # Load existing data
             df = pd.read_parquet(file_path)
@@ -1348,10 +1360,8 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             )]
         
         try:
-            # Create full snapshot if configured to do so
-            snapshot_path = None
-            if should_create_full_snapshot(data_type):
-                snapshot_path = create_snapshot(file_path)
+            # Always create snapshot before modification (per policy)
+            snapshot_path = create_snapshot(file_path)
             
             # Load existing data
             df = pd.read_parquet(file_path)
@@ -1466,10 +1476,8 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             )]
         
         try:
-            # Create full snapshot if configured to do so
-            snapshot_path = None
-            if should_create_full_snapshot(data_type):
-                snapshot_path = create_snapshot(file_path)
+            # Always create snapshot before modification (per policy)
+            snapshot_path = create_snapshot(file_path)
             
             # Load existing data
             df = pd.read_parquet(file_path)
@@ -1663,10 +1671,8 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             )]
         
         try:
-            # Create full snapshot if configured to do so
-            snapshot_path = None
-            if should_create_full_snapshot(data_type):
-                snapshot_path = create_snapshot(file_path)
+            # Always create snapshot before modification (per policy)
+            snapshot_path = create_snapshot(file_path)
             
             # Load existing data
             df = pd.read_parquet(file_path)

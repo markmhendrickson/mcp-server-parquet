@@ -35,12 +35,12 @@ The server uses the following priority to locate the data directory:
 
 1. **Environment Variable** (highest priority):
    ```bash
-   export PARQUET_DATA_DIR="/path/to/your/data/directory"
+   export DATA_DIR="/path/to/your/data/directory"
    ```
 
 2. **Auto-detection** (for backward compatibility):
    - Automatically detects parent repository structure
-   - Looks for `truth/data/` directory in common locations
+   - Looks for `$DATA_DIR/` directory in common locations
 
 3. **Default** (if no structure found):
    - Uses `~/.config/parquet-mcp/data/` as fallback
@@ -61,7 +61,7 @@ Add to your Cursor MCP settings (typically `~/.cursor/mcp.json` or Cursor settin
         "/path/to/parquet_mcp_server.py"
       ],
       "env": {
-        "PARQUET_DATA_DIR": "/path/to/your/data/directory"
+        "DATA_DIR": "/path/to/your/data/directory"
       }
     }
   }
@@ -78,7 +78,7 @@ Add to your Cursor MCP settings (typically `~/.cursor/mcp.json` or Cursor settin
         "/path/to/parquet_mcp_server.py"
       ],
       "env": {
-        "PARQUET_DATA_DIR": "/path/to/your/data/directory",
+        "DATA_DIR": "/path/to/your/data/directory",
         "MCP_FULL_SNAPSHOTS": "true",
         "MCP_SNAPSHOT_FREQUENCY": "weekly"
       }
@@ -102,7 +102,7 @@ Add to `claude_desktop_config.json` (typically `~/Library/Application Support/Cl
         "/path/to/parquet_mcp_server.py"
       ],
       "env": {
-        "PARQUET_DATA_DIR": "/path/to/your/data/directory"
+        "DATA_DIR": "/path/to/your/data/directory"
       }
     }
   }
@@ -166,6 +166,11 @@ Read and query a parquet file with optional filters. Supports enhanced filtering
   - `{"$ne": "value"}`: not equal
 - `limit` (optional): Maximum number of rows to return (default: 1000)
 - `columns` (optional): List of column names to return (default: all columns)
+- `sort_by` (optional): List of sort specifications, each with:
+  - `column` (required): Column name to sort by
+  - `ascending` (optional): Sort direction, `true` for ascending (default), `false` for descending
+  - `na_position` (optional): Where to place null/NaN values: `"last"` (default) or `"first"`
+  - `custom_order` (optional): Custom order for enum values (e.g., `["critical", "high", "medium", "low"]`)
 
 **Examples:**
 ```json
@@ -195,6 +200,24 @@ Read and query a parquet file with optional filters. Supports enhanced filtering
   "filters": {
     "title": {"$fuzzy": {"text": "therapy session", "threshold": 0.7}}
   }
+}
+```
+
+**Example with sorting:**
+```json
+{
+  "data_type": "tasks",
+  "filters": {
+    "sync_log": "exported"
+  },
+  "sort_by": [
+    {
+      "column": "sync_datetime",
+      "ascending": false,
+      "na_position": "last"
+    }
+  ],
+  "limit": 10
 }
 ```
 
@@ -424,18 +447,16 @@ All write operations create lightweight audit log entries in `data/logs/audit_lo
 - **Content**: Operation type, record ID, affected fields, old/new values, timestamp
 - **Recovery**: Rollback specific operations using `rollback_operation` tool
 
-### Optional Full Snapshots
+### Automatic Snapshots
 
-Configure periodic full snapshots for additional safety:
-
-**Environment Variables:**
-- `MCP_FULL_SNAPSHOTS`: Set to "true" to enable periodic snapshots (default: false)
-- `MCP_SNAPSHOT_FREQUENCY`: "daily", "weekly", "monthly", "never" (default: weekly)
+**All write operations automatically create timestamped snapshots before modification** (per policy requirement). This ensures rollback capability for every data change.
 
 **Snapshot Location:**
 ```
 data/snapshots/[data_type]-[YYYY-MM-DD-HHMMSS].parquet
 ```
+
+**Note:** The `MCP_FULL_SNAPSHOTS` and `MCP_SNAPSHOT_FREQUENCY` environment variables are no longer used - snapshots are always created for all write operations.
 
 ### Storage Comparison
 
