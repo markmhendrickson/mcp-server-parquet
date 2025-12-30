@@ -19,20 +19,17 @@
 **New Constants:**
 - `LOGS_DIR`: Directory for audit log (`data/logs/`)
 - `AUDIT_LOG_PATH`: Path to audit log parquet file
-- `FULL_SNAPSHOT_ENABLED`: Environment variable for optional full snapshots (default: false)
-- `SNAPSHOT_FREQUENCY`: How often to create full snapshots (default: weekly)
 
 **New Functions:**
-- `should_create_full_snapshot()`: Determines if full snapshot needed based on configuration
+- `create_snapshot()`: Creates timestamped snapshot before modifications
 - `create_audit_entry()`: Creates audit log entry for data modifications
   - Stores operation type, record ID, affected fields, old/new values
   - Appends to `data/logs/audit_log.parquet`
   - Returns audit entry with unique `audit_id`
 
 **Modified Functions:**
-- `add_record()`: Now creates audit log entry instead of always creating full snapshot
-  - Only creates full snapshot if `should_create_full_snapshot()` returns true
-  - Returns `audit_id` in response
+- `add_record()`: Always creates snapshot before modification, then creates audit log entry
+  - Returns `audit_id` and `snapshot_created` path in response
   
 - `update_records()`: Creates audit log entries for each updated record
   - Captures old values before modification
@@ -76,20 +73,18 @@ Result: 99%+ reduction vs snapshot-per-operation
 
 ## Configuration
 
-### Default (Development)
-```bash
-# No environment variables needed
-# FULL_SNAPSHOT_ENABLED=false (default)
-# SNAPSHOT_FREQUENCY=weekly (default)
-```
-Result: Audit log only, no periodic snapshots
+### Automatic Snapshots
 
-### Production
-```bash
-export MCP_FULL_SNAPSHOTS=true
-export MCP_SNAPSHOT_FREQUENCY=weekly
+**All write operations automatically create timestamped snapshots before modification.** No configuration is required.
+
+**Snapshot Format:**
 ```
-Result: Weekly full snapshots + audit log for every operation
+data/snapshots/[data_type]-[YYYY-MM-DD-HHMMSS].parquet
+```
+
+**Result:** Every write operation creates both:
+1. A timestamped snapshot (for rollback)
+2. An audit log entry (for change tracking)
 
 ## Testing Required
 

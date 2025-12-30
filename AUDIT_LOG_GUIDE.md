@@ -46,29 +46,20 @@ Fields:
 
 ## Configuration
 
-### Environment Variables
+### Automatic Snapshots
 
-```bash
-# Enable periodic full snapshots (default: false)
-export MCP_FULL_SNAPSHOTS=true
+**All write operations automatically create timestamped snapshots before modification.** No configuration is required - snapshots are always created for:
+- `add_record` operations
+- `update_records` operations
+- `upsert_record` operations
+- `delete_records` operations
 
-# Snapshot frequency: daily, weekly, monthly, never (default: weekly)
-export MCP_SNAPSHOT_FREQUENCY=weekly
+**Snapshot Location:**
+```
+data/snapshots/[data_type]-[YYYY-MM-DD-HHMMSS].parquet
 ```
 
-### Recommended Settings
-
-**Development/Testing:**
-```bash
-export MCP_FULL_SNAPSHOTS=false
-export MCP_SNAPSHOT_FREQUENCY=never
-```
-
-**Production:**
-```bash
-export MCP_FULL_SNAPSHOTS=true
-export MCP_SNAPSHOT_FREQUENCY=weekly
-```
+**Note:** The `MCP_FULL_SNAPSHOTS` and `MCP_SNAPSHOT_FREQUENCY` environment variables are no longer used - snapshots are always created automatically.
 
 ## New Tools
 
