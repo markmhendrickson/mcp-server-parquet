@@ -1366,6 +1366,10 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             # Load existing data
             df = pd.read_parquet(file_path)
             
+            # Coerce date columns immediately after reading to ensure proper types
+            # This prevents type conversion errors when assigning date values
+            df = coerce_date_columns(df, data_type)
+            
             # Create mask for matching records
             mask = pd.Series([True] * len(df))
             for key, value in filters.items():
@@ -1396,7 +1400,7 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             audit_ids = []
             for idx, row in affected_records.iterrows():
                 record_id = row.get(id_field, f"idx_{idx}")
-                old_values = {k: row[k] for k in updates.keys() if k in row.index}
+                old_values = {k: row[k] for k in updates.keys() if k in row.index and k in row}
                 
                 audit_entry = create_audit_entry(
                     operation="update",
@@ -1588,7 +1592,7 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
                     record_id = row.get(id_field, f"idx_{idx}")
                     
                     # Get old values for fields being updated
-                    old_values = {k: row[k] for k in updates.keys() if k in row.index}
+                    old_values = {k: row[k] for k in updates.keys() if k in row.index and k in row}
                     
                     # Create audit entry
                     audit_entry = create_audit_entry(

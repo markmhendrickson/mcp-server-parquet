@@ -13,6 +13,7 @@ This is a custom MCP server implementation for parquet file management with audi
 - **Update Records**: Update existing records matching filters with audit trail
 - **Upsert Records**: Insert or update records (supports enhanced filters for duplicate detection)
 - **Delete Records**: Delete records matching filters with audit trail
+- **Schema Management**: Create new data types and evolve existing schemas programmatically
 - **Audit Log**: Complete change history with old/new values for all modifications
 - **Rollback**: Undo specific operations using audit IDs
 - **Schema Discovery**: Get schema definitions for data types
@@ -144,6 +145,63 @@ Get the schema definition for a data type.
 
 **Parameters:**
 - `data_type` (required): The data type name (e.g., 'flows', 'transactions', 'tasks')
+
+### `create_data_type`
+Create a new data type with schema definition. Creates the schema JSON file, directory structure, and initializes an empty parquet file. Use when introducing a new data type that doesn't exist yet.
+
+**Parameters:**
+- `data_type` (required): The data type name (e.g., 'relationships', 'custom_events')
+- `schema` (required): Schema definition object with `field_name: type_name` pairs. Supported types: `'string'`, `'integer'`, `'int64'`, `'float64'`, `'boolean'`, `'date'`, `'datetime'`, `'timestamp'`
+- `description` (required): Description of the data type and its purpose
+- `version` (optional): Schema version (e.g., '1.0.0', default: '1.0.0')
+
+**Example:**
+```json
+{
+  "data_type": "relationships",
+  "schema": {
+    "relationship_id": "string",
+    "source_contact_id": "string",
+    "target_contact_id": "string",
+    "relationship_type": "string",
+    "start_date": "date",
+    "end_date": "date",
+    "notes": "string",
+    "created_date": "date",
+    "updated_date": "date"
+  },
+  "description": "Structured relationships between contacts",
+  "version": "1.0.0"
+}
+```
+
+### `update_schema`
+Update an existing data type schema. Supports adding new fields, updating description, and version bumping. Automatically adds missing columns to existing parquet file. Schema evolution only - does not support removing fields or changing field types (breaking changes require manual migration).
+
+**Parameters:**
+- `data_type` (required): The data type name (e.g., 'contacts', 'tasks')
+- `add_fields` (optional): New fields to add: `{field_name: type_name}`. Types: `'string'`, `'integer'`, `'int64'`, `'float64'`, `'boolean'`, `'date'`, `'datetime'`, `'timestamp'`
+- `update_description` (optional): Update the schema description
+- `version` (optional): New schema version (e.g., '1.1.0'). If not provided, minor version is auto-incremented for field additions
+- `update_parquet` (optional): Whether to update the parquet file to add missing columns (default: `true`)
+
+**Example:**
+```json
+{
+  "data_type": "contacts",
+  "add_fields": {
+    "middle_name": "string",
+    "suffix": "string"
+  },
+  "update_description": "Contact information with enhanced name fields",
+  "version": "1.1.0"
+}
+```
+
+**Limitations:**
+- Cannot remove fields (breaking change - requires manual migration)
+- Cannot change field types (breaking change - requires manual migration)
+- Only supports additive schema evolution
 
 ### `read_parquet`
 Read and query a parquet file with optional filters. Supports enhanced filtering operators.
